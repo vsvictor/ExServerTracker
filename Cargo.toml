@@ -1,0 +1,80 @@
+[package]
+name = "json-rpc-2-coopnav"
+version = "1.0.0"
+edition = "2024"
+description = "Autonomous vehicle tracking and cooperative positioning backend plugin"
+license = "MIT"
+
+[lib]
+name = "json_rpc_2_coopnav"
+path = "src/lib.rs"
+
+[features]
+default = ["redis-storage", "metrics-http1"]
+redis-storage = ["dep:redis"]
+metrics-http1 = ["dep:axum", "dep:json-rpc-2-runtime", "json-rpc-2-runtime/http1"]
+quic-transport = ["dep:json-rpc-2-runtime", "json-rpc-2-runtime/quic"]
+server-example = [
+    "dep:json-rpc-2-backend",
+    "dep:json-rpc-2-runtime",
+    "json-rpc-2-oauth2/redis",
+    "quic-transport",
+    "metrics-http1",
+]
+multi-transport-example = [
+    "dep:json-rpc-2-runtime",
+    "dep:rustls-pemfile",
+    "json-rpc-2-oauth2/redis",
+    "quic-transport",
+    "metrics-http1",
+]
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", optional = true }
+dashmap = "6"
+hex = "0.4"
+json-rpc-2-backend = { git = "https://github.com/vsvictor/JSON-RPC-2.git", rev = "af8d04dbbaee05fa1514caa07a37808d5973d100", optional = true }
+json-rpc-2-oauth2 = { git = "https://github.com/vsvictor/JSON-RPC-2-OAuth2.git", rev = "1b0043f27cc445e9d238a643ab32fd45e143ea6e", default-features = false, features = ["annotations"] }
+json-rpc-2-runtime = { git = "https://github.com/vsvictor/JSON-RPC-2.git", rev = "af8d04dbbaee05fa1514caa07a37808d5973d100", default-features = false, optional = true }
+json-rpc-2-server = { git = "https://github.com/vsvictor/JSON-RPC-2.git", rev = "af8d04dbbaee05fa1514caa07a37808d5973d100" }
+prost = "0.14"
+rand = "0.9"
+redis = { version = "0.32.7", features = ["connection-manager", "tokio-comp"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+rustls-pemfile = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1"
+url = "2"
+
+[dev-dependencies]
+json-rpc-2-oauth2 = { git = "https://github.com/vsvictor/JSON-RPC-2-OAuth2.git", rev = "1b0043f27cc445e9d238a643ab32fd45e143ea6e", default-features = false, features = ["annotations", "sqlite"] }
+json-rpc-2-client = { git = "https://github.com/vsvictor/JSON-RPC-2.git", rev = "af8d04dbbaee05fa1514caa07a37808d5973d100" }
+json-rpc-2-quic = { git = "https://github.com/vsvictor/JSON-RPC-2.git", rev = "af8d04dbbaee05fa1514caa07a37808d5973d100", default-features = false, features = ["quic"] }
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+
+[[test]]
+name = "host_transport"
+path = "tests/host_transport/tests.rs"
+required-features = ["quic-transport", "metrics-http1"]
+
+[[example]]
+name = "backend"
+path = "examples/backend.rs"
+required-features = ["server-example", "redis-storage"]
+
+[[example]]
+name = "multi_transport"
+path = "examples/multi_transport.rs"
+required-features = ["multi-transport-example", "redis-storage"]
+
+[patch.crates-io]
+h3 = { git = "https://github.com/hyperium/h3", package = "h3" }
+h3-quinn = { git = "https://github.com/hyperium/h3", package = "h3-quinn" }
