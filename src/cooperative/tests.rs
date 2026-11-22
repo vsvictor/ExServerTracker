@@ -393,3 +393,483 @@ fn match_is_one_to_one_and_ambiguity_is_not_resolved_by_weighting() {
         3
     );
 }
+
+fn record(id: &str, peer: PeerState, time: u64) -> PeerRecord {
+    PeerRecord {
+        donor_id: id.into(),
+        subject_key: None,
+        capture_ms: time,
+        received_ms: time,
+        state: peer,
+    }
+}
+
+#[test]
+fn low_trust_or_range_beyond_two_hundred_meters_yields_no_donor() {
+    let session = ConfirmedSession::new("a", "a", "brand").unwrap();
+    let class = VehicleClass::Car;
+    let near = params(
+        &session,
+        NOW,
+        state(0.0, class),
+        vec![observation("near", 30.0, class)],
+    );
+    let mut weak = state(30.0, class);
+    weak.trust_score = 0.69;
+    assert!(
+        spatial::matched(
+            &near,
+            vec![record("weak", weak, NOW)],
+            "self",
+            "self",
+            NOW,
+            2000
+        )
+        .matched_donors
+        .is_empty()
+    );
+
+    let far = params(
+        &session,
+        NOW,
+        state(0.0, class),
+        vec![observation("far", 200.0, class)],
+    );
+    assert!(
+        spatial::matched(
+            &far,
+            vec![record("distant", state(201.0, class), NOW)],
+            "self",
+            "self",
+            NOW,
+            2000
+        )
+        .matched_donors
+        .is_empty()
+    );
+}
+
+#[test]
+fn extrapolated_unique_pair_within_twelve_meters_is_returned() {
+    let session = ConfirmedSession::new("a", "a", "brand").unwrap();
+    let class = VehicleClass::Bus;
+    let request = params(
+        &session,
+        NOW,
+        state(0.0, class),
+        vec![observation("moving", 50.0, class)],
+    );
+    let mut moving = state(30.0, class);
+    moving.speed_mps = 10.0;
+    let captured = NOW - 1_500;
+    let matched = spatial::matched(
+        &request,
+        vec![record("moving", moving.clone(), captured)],
+        "self",
+        "self",
+        NOW,
+        3_000,
+    );
+    assert_eq!(matched.matched_donors.len(), 1);
+    let own = (50.45, 30.52);
+    let returned = (
+        matched.matched_donors[0].latitude,
+        matched.matched_donors[0].longitude,
+    );
+    let travelled = spatial::distance(own, returned);
+    assert!(
+        (travelled - 45.0).abs() < 1.0,
+        "extrapolated donor was {travelled} m from the requester"
+    );
+    moving.speed_mps = 0.0;
+    assert!(
+        spatial::matched(
+            &request,
+            vec![record("still", moving, captured)],
+            "self",
+            "self",
+            NOW,
+            3_000
+        )
+        .matched_donors
+        .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn gtfs_bus_and_trolleybus_match_for_one_brand_and_car_stays_out_of_the_index() {
+    struct Feed;
+
+    #[async_trait]
+    impl TransitSource for Feed {
+        fn brand_id(&self) -> &str {
+            "brand"
+        }
+
+        async fn fetch(&self, now: u64, _: u64) -> Result<Vec<TransitFix>, GtfsError> {
+            Ok(vec![
+                TransitFix {
+                    vehicle_id: "bus-1".into(),
+                    capture_ms: now,
+                    state: state(30.0, VehicleClass::Bus),
+                },
+                TransitFix {
+                    vehicle_id: "wire-1".into(),
+                    capture_ms: now,
+                    state: state(80.0, VehicleClass::Trolleybus),
+                },
+                TransitFix {
+                    vehicle_id: "car-1".into(),
+                    capture_ms: now,
+                    state: state(50.0, VehicleClass::Car),
+                },
+            ])
+        }
+    }
+
+    let storage = Arc::new(InMemoryCooperativeStorage::default());
+    let config = CooperativeConfig::new(
+        storage.clone(),
+        Some(Arc::new(Feed)),
+        Duration::from_secs(2),
+        Duration::from_millis(100),
+    )
+    .unwrap();
+    let sections = SectionControls::new(Arc::new(ManualClock::new(NOW)), Some(config));
+    sections.section(2, true).await.unwrap();
+    sections.maintenance_handle().maintenance()[0]
+        .run()
+        .await
+        .unwrap();
+    let epoch = sections.generation().unwrap();
+    let mut indexed: Vec<_> = storage
+        .nearby(&epoch, "brand", (50.45, 30.52), NOW, 2000)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_iter()
+        .map(|peer| peer.state.vehicle_class)
+        .collect();
+    indexed.sort_by_key(|class| format!("{class:?}"));
+    assert_eq!(indexed, vec![VehicleClass::Bus, VehicleClass::Trolleybus]);
+
+    let caller = ConfirmedSession::new("caller-session", "caller", "brand").unwrap();
+    let found = sections
+        .sync(
+            &epoch,
+            "caller-subject",
+            &caller,
+            params(
+                &caller,
+                NOW,
+                state(0.0, VehicleClass::Car),
+                vec![
+                    observation("bus", 30.0, VehicleClass::Bus),
+                    observation("wire", 80.0, VehicleClass::Trolleybus),
+                    observation("car", 50.0, VehicleClass::Car),
+                ],
+            ),
+        )
+        .await
+        .unwrap();
+    let mut matched: Vec<_> = found
+        .matched_donors
+        .iter()
+        .map(|donor| donor.vehicle_class)
+        .collect();
+    matched.sort_by_key(|class| format!("{class:?}"));
+    assert_eq!(matched, vec![VehicleClass::Bus, VehicleClass::Trolleybus]);
+}
+
+#[cfg(feature = "redis-storage")]
+#[tokio::test]
+#[ignore = "set COOPNAV_REDIS_URL; times NEARBY only, not QUIC or RPC JSON"]
+async fn redis_nearby_p99() {
+    let Ok(url) = std::env::var("COOPNAV_REDIS_URL") else {
+        eprintln!("COOPNAV_REDIS_URL is unset; nearby p99 was not measured");
+        return;
+    };
+    if url.trim().is_empty() {
+        eprintln!("COOPNAV_REDIS_URL is empty; nearby p99 was not measured");
+        return;
+    }
+    let storage = RedisCooperativeStorage::connect(&url, "coopnav-nearby-p99")
+        .await
+        .unwrap();
+    let namespace = "p99";
+    let brand = "brand";
+    storage.clear(namespace, brand).await.unwrap();
+    let center = (50.45, 30.52);
+    let updates: Vec<_> = (0..50)
+        .map(|index| {
+            let (latitude, longitude) = spatial::project(
+                center.0,
+                center.1,
+                5.0 + index as f64 * 3.0,
+                index as f64 * 7.2,
+            );
+            PeerWrite {
+                donor_id: format!("peer-{index}"),
+                subject_key: None,
+                capture_ms: NOW,
+                state: Some(PeerState {
+                    latitude,
+                    longitude,
+                    accuracy_meters: 3.0,
+                    speed_mps: 0.0,
+                    bearing_degrees: 0.0,
+                    trust_score: 0.9,
+                    vehicle_class: VehicleClass::Car,
+                    flags: Vec::new(),
+                }),
+            }
+        })
+        .collect();
+    storage
+        .publish(namespace, brand, &updates, NOW, 2_000)
+        .await
+        .unwrap();
+    // Eight observations are matched after this script. QUIC and RPC JSON are outside the budget.
+    for _ in 0..10 {
+        let warmed = storage
+            .nearby(namespace, brand, center, NOW, 2_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(warmed.len(), 50);
+    }
+    let mut samples = Vec::with_capacity(100);
+    for _ in 0..100 {
+        let started = std::time::Instant::now();
+        let found = storage
+            .nearby(namespace, brand, center, NOW, 2_000)
+            .await
+            .unwrap()
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(found.len(), 50);
+        samples.push(elapsed);
+    }
+    storage.clear(namespace, brand).await.unwrap();
+    samples.sort();
+    let p99 = samples[98];
+    eprintln!("nearby p99 {p99:?}");
+    assert!(
+        p99 <= std::time::Duration::from_millis(5),
+        "nearby p99 {p99:?} exceeds 5 ms"
+    );
+}
+
+fn shared_config(
+    storage: Arc<dyn CooperativeStorage>,
+    epoch: &str,
+    brand: &str,
+) -> CooperativeConfig {
+    CooperativeConfig::new(storage, None, Duration::from_secs(2), Duration::ZERO)
+        .unwrap()
+        .with_shared_epoch(epoch)
+        .unwrap()
+        .with_shared_brand(brand)
+        .unwrap()
+}
+
+fn enabled_pair(
+    storage: Arc<dyn CooperativeStorage>,
+    epoch: &str,
+    brand: &str,
+) -> (SectionControls, SectionControls) {
+    let clock = Arc::new(ManualClock::new(NOW));
+    let left = SectionControls::new(
+        clock.clone(),
+        Some(shared_config(storage.clone(), epoch, brand)),
+    );
+    let right = SectionControls::new(clock, Some(shared_config(storage, epoch, brand)));
+    (left, right)
+}
+
+#[tokio::test]
+async fn shared_epoch_and_brand_are_visible_across_section_controls() {
+    let storage = Arc::new(InMemoryCooperativeStorage::default());
+    let (left, right) = enabled_pair(storage.clone(), "deploy-epoch", "city");
+    left.section(2, true).await.unwrap();
+    right.section(2, true).await.unwrap();
+    let epoch = left.generation().unwrap();
+    assert_eq!(right.generation().unwrap(), epoch);
+
+    let donor = ConfirmedSession::new("donor-session", "donor", "city").unwrap();
+    let caller = ConfirmedSession::new("caller-session", "caller", "city").unwrap();
+    left.sync(
+        &epoch,
+        "donor-subject",
+        &donor,
+        params(&donor, NOW, state(40.0, VehicleClass::Bus), Vec::new()),
+    )
+    .await
+    .unwrap();
+    let found = right
+        .sync(
+            &epoch,
+            "caller-subject",
+            &caller,
+            params(
+                &caller,
+                NOW,
+                state(0.0, VehicleClass::Car),
+                vec![observation("bus", 40.0, VehicleClass::Bus)],
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(found.matched_donors.len(), 1);
+    assert_eq!(found.matched_donors[0].observation_id, "bus");
+}
+
+#[tokio::test]
+async fn disabling_one_shared_epoch_leaves_the_other_index_intact() {
+    let storage = Arc::new(InMemoryCooperativeStorage::default());
+    let (left, right) = enabled_pair(storage.clone(), "deploy-epoch", "city");
+    left.section(2, true).await.unwrap();
+    right.section(2, true).await.unwrap();
+    let epoch = left.generation().unwrap();
+    let donor = ConfirmedSession::new("donor-session", "donor", "city").unwrap();
+    left.sync(
+        &epoch,
+        "donor-subject",
+        &donor,
+        params(&donor, NOW, state(40.0, VehicleClass::Bus), Vec::new()),
+    )
+    .await
+    .unwrap();
+
+    left.section(2, false).await.unwrap();
+    assert!(!left.section_enabled(2).await.unwrap());
+    let still_there = storage
+        .nearby(&epoch, "city", (50.45, 30.52), NOW, 2000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still_there.len(), 1);
+    let caller = ConfirmedSession::new("caller-session", "caller", "city").unwrap();
+    let found = right
+        .sync(
+            &epoch,
+            "caller-subject",
+            &caller,
+            params(
+                &caller,
+                NOW,
+                state(0.0, VehicleClass::Car),
+                vec![observation("bus", 40.0, VehicleClass::Bus)],
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(found.matched_donors.len(), 1);
+
+    left.section(2, true).await.unwrap();
+    assert_eq!(left.generation().unwrap(), epoch);
+    left.section(1, false).await.unwrap();
+    assert!(!left.section_enabled(2).await.unwrap());
+    let after_stage_one = storage
+        .nearby(&epoch, "city", (50.45, 30.52), NOW, 2000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        after_stage_one
+            .iter()
+            .any(|peer| peer.state.vehicle_class == VehicleClass::Bus)
+    );
+    assert_eq!(after_stage_one.len(), 2);
+    left.section(1, true).await.unwrap();
+    assert!(!left.section_enabled(2).await.unwrap());
+}
+
+#[tokio::test]
+async fn personal_session_brand_stays_while_nearby_uses_the_shared_brand() {
+    let storage = Arc::new(InMemoryCooperativeStorage::default());
+    let sections = SectionControls::new(
+        Arc::new(ManualClock::new(NOW)),
+        Some(shared_config(storage.clone(), "deploy-epoch", "city")),
+    );
+    sections.section(2, true).await.unwrap();
+    let epoch = sections.generation().unwrap();
+    let personal = ConfirmedSession::new("sess", "ada", "personal:ada").unwrap();
+    sections
+        .sync(
+            &epoch,
+            "ada",
+            &personal,
+            params(&personal, NOW, state(10.0, VehicleClass::Car), Vec::new()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(personal.brand_id, "personal:ada");
+    assert!(
+        storage
+            .nearby(&epoch, "personal:ada", (50.45, 30.52), NOW, 2000)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        storage
+            .nearby(&epoch, "city", (50.45, 30.52), NOW, 2000)
+            .await
+            .unwrap()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn gtfs_brand_other_than_the_shared_donor_brand_is_not_configured() {
+    struct Feed(&'static str);
+    #[async_trait]
+    impl TransitSource for Feed {
+        fn brand_id(&self) -> &str {
+            self.0
+        }
+        async fn fetch(&self, _: u64, _: u64) -> Result<Vec<TransitFix>, GtfsError> {
+            Ok(Vec::new())
+        }
+    }
+    let storage = Arc::new(InMemoryCooperativeStorage::default());
+    let mismatched = CooperativeConfig::new(
+        storage.clone(),
+        Some(Arc::new(Feed("other-brand"))),
+        Duration::from_secs(2),
+        Duration::from_millis(100),
+    )
+    .unwrap();
+    assert!(matches!(
+        mismatched.with_shared_brand("city"),
+        Err(SectionError::Configuration)
+    ));
+    let matched = CooperativeConfig::new(
+        storage,
+        Some(Arc::new(Feed("city"))),
+        Duration::from_secs(2),
+        Duration::from_millis(100),
+    )
+    .unwrap()
+    .with_shared_brand("city");
+    assert!(matched.is_ok());
+}
+
+#[test]
+fn shared_mode_without_an_epoch_id_is_a_configuration_error() {
+    let config = CooperativeConfig::new(
+        Arc::new(InMemoryCooperativeStorage::default()),
+        None,
+        Duration::from_secs(2),
+        Duration::ZERO,
+    )
+    .unwrap();
+    assert!(matches!(
+        config.with_shared_epoch(""),
+        Err(SectionError::Configuration)
+    ));
+}

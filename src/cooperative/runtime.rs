@@ -20,6 +20,10 @@ pub struct CooperativeConfig {
     transit: Option<Arc<dyn TransitSource>>,
     freshness_ms: u64,
     poll_interval: Duration,
+    /// Stable id shared by every backend process. `None` keeps a private random epoch.
+    shared_epoch: Option<String>,
+    /// Donor index brand. `None` keeps the confirmed session brand.
+    shared_brand: Option<String>,
 }
 
 impl CooperativeConfig {
@@ -43,7 +47,36 @@ impl CooperativeConfig {
             transit,
             freshness_ms: freshness.as_millis() as u64,
             poll_interval,
+            shared_epoch: None,
+            shared_brand: None,
         })
+    }
+
+    /// Request the shared epoch. An empty or invalid id is a configuration error.
+    /// Omitting this call keeps the private random epoch.
+    pub fn with_shared_epoch(mut self, epoch: impl Into<String>) -> Result<Self, SectionError> {
+        let epoch = epoch.into();
+        if crate::model::validate_identifier(&epoch).is_err() {
+            return Err(SectionError::Configuration);
+        }
+        self.shared_epoch = Some(epoch);
+        Ok(self)
+    }
+
+    /// Publish, nearby, and GTFS use this brand. The session brand is not replaced.
+    /// A GTFS feed with a different brand is a configuration error.
+    pub fn with_shared_brand(mut self, brand: impl Into<String>) -> Result<Self, SectionError> {
+        let brand = brand.into();
+        if crate::model::validate_identifier(&brand).is_err()
+            || self
+                .transit
+                .as_ref()
+                .is_some_and(|source| source.brand_id() != brand)
+        {
+            return Err(SectionError::Configuration);
+        }
+        self.shared_brand = Some(brand);
+        Ok(self)
     }
 }
 
@@ -60,7 +93,7 @@ pub enum SectionError {
     #[error("stage 2 requires injected cooperative storage")]
     Unconfigured,
     #[error(
-        "invalid stage 2 configuration: require 1–2000 ms freshness, 100 ms–30 s polling interval, and valid GTFS brand"
+        "invalid stage 2 configuration: require 1–2000 ms freshness, 100 ms–30 s polling interval, a non-empty shared epoch when shared mode is requested, and a GTFS brand equal to the shared donor brand"
     )]
     Configuration,
     #[error("stage 3 is forbidden and not implemented")]
@@ -74,6 +107,7 @@ pub enum SectionError {
 struct Epoch {
     id: String,
     brands: Mutex<HashSet<String>>,
+    shared: bool,
 }
 
 impl Epoch {
@@ -155,11 +189,20 @@ impl SectionControls {
                             "stage 2 enabled in V2V-only mode"
                         );
                     }
-                    let id = hex::encode(rand::random::<[u8; 16]>());
+                    let (id, shared) = match self
+                        .0
+                        .config
+                        .as_ref()
+                        .and_then(|config| config.shared_epoch.clone())
+                    {
+                        Some(id) => (id, true),
+                        None => (hex::encode(rand::random::<[u8; 16]>()), false),
+                    };
                     self.0.generation.send_replace(Some(id.clone()));
                     stages.epoch = Some(Epoch {
                         id,
                         brands: Mutex::new(HashSet::new()),
+                        shared,
                     });
                 }
             }
@@ -177,14 +220,17 @@ impl SectionControls {
         if let Some(old) = old {
             // Let the canceled fetch drop before completing disable; don't hold the stage write lock.
             let _poll = self.0.poll.lock().await;
-            let config = self.0.config.as_ref().ok_or(SectionError::Unconfigured)?;
-            let brands = old.brands.into_inner().map_err(|_| SectionError::Storage)?;
-            let mut failed = false;
-            for brand in brands {
-                failed |= config.storage.clear(&old.id, &brand).await.is_err();
-            }
-            if failed {
-                return Err(SectionError::Storage);
+            // A shared epoch is also owned by the other backend. Its keys expire by PX.
+            if !old.shared {
+                let config = self.0.config.as_ref().ok_or(SectionError::Unconfigured)?;
+                let brands = old.brands.into_inner().map_err(|_| SectionError::Storage)?;
+                let mut failed = false;
+                for brand in brands {
+                    failed |= config.storage.clear(&old.id, &brand).await.is_err();
+                }
+                if failed {
+                    return Err(SectionError::Storage);
+                }
             }
         }
         Ok(())
@@ -254,7 +300,11 @@ impl SectionControls {
         if !spatial::fresh(params.capture_timestamp_ms, now, config.freshness_ms) {
             return Err(SectionError::Timestamp);
         }
-        let brand = &session.brand_id;
+        let index_brand = config
+            .shared_brand
+            .clone()
+            .unwrap_or_else(|| session.brand_id.clone());
+        let brand = index_brand.as_str();
         epoch.touch(brand)?;
         let donor_id = opaque(&[generation, brand, "driver", &session.driver_id]);
         let subject_key = opaque(&[generation, brand, "subject", subject]);
@@ -352,7 +402,10 @@ impl SectionControls {
             return Ok(());
         };
         let now = self.0.clock.now_millis();
-        let brand = transit.brand_id();
+        let shared_brand = config.shared_brand.clone();
+        let brand = shared_brand
+            .as_deref()
+            .unwrap_or_else(|| transit.brand_id());
         let updates: Vec<_> = fixes
             .into_iter()
             .filter_map(|fix| {
