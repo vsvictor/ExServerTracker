@@ -55,6 +55,15 @@ timestamps are valid; the server does not sort or enforce freshness. IDs are
 `source: "cooperative"` is accepted as tracking history; ingest never
 populates the cooperative donor index.
 
+The server does not choose how often a vehicle reports. It stores every accepted
+point and enforces no minimum spacing. ExKMPTracker 1.1.0 decides that before
+enqueue: the 25 m / 10° / 30 s gates are the reference at 8 m/s, the schedule is
+sparser at low speed and denser at high speed, and turns, departure, a 5 m/s
+speed change, GNSS recovery and a large accuracy change record immediately.
+Ingest is attempted about every 30 s while slow and every 5 s at highway speed.
+A fast vehicle therefore arrives as a small batch, not as one point per GNSS fix.
+The 100-point cap still applies when a phone has been offline.
+
 The server resolves `sessionId` through an injected `SessionAuthorizer` using
 the verified PASETO subject, then requires its returned confirmed
 `sessionId`/`driverId`/`brandId` tuple to exactly match the request. Client
