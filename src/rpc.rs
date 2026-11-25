@@ -281,15 +281,20 @@ where
         &params.brand_id,
     )
     .await?;
-    let _stage = request
-        .sections
-        .ingest_guard()
-        .await
-        .map_err(section_error)?;
+    store_points(&request.sections, &*request.storage, &confirmed, &params).await
+}
+
+pub(crate) async fn store_points(
+    sections: &SectionControls,
+    storage: &dyn CoopNavStorage,
+    confirmed: &ConfirmedSession,
+    params: &IngestParams,
+) -> Result<Value, RpcError> {
+    let _stage = sections.ingest_guard().await.map_err(section_error)?;
 
     let partition = StoragePartition {
-        brand_id: confirmed.brand_id,
-        driver_id: confirmed.driver_id,
+        brand_id: confirmed.brand_id.clone(),
+        driver_id: confirmed.driver_id.clone(),
     };
     let mut accepted = Vec::with_capacity(params.points.len());
     let mut seen = HashSet::with_capacity(params.points.len());
@@ -297,8 +302,7 @@ where
         if !seen.insert(point.id.as_str()) {
             continue;
         }
-        match request
-            .storage
+        match storage
             .append_point(&partition, point)
             .await
             .map_err(|error| {
@@ -402,7 +406,7 @@ async fn resolve_owned(
     Ok(confirmed)
 }
 
-fn section_error(error: SectionError) -> RpcError {
+pub(crate) fn section_error(error: SectionError) -> RpcError {
     let code = match error {
         SectionError::Timestamp => -32013,
         SectionError::Storage => -32010,
@@ -446,7 +450,7 @@ fn storage_error() -> RpcError {
     )
 }
 
-fn session_schema() -> Value {
+pub(crate) fn session_schema() -> Value {
     json!({
         "type": "object",
         "required": ["sessionId"],
@@ -463,7 +467,7 @@ fn session_schema() -> Value {
     })
 }
 
-fn ingest_schema() -> Value {
+pub(crate) fn ingest_schema() -> Value {
     json!({
         "type": "object",
         "required": ["sessionId", "driverId", "brandId", "points"],

@@ -148,6 +148,13 @@ ID непрозорі й змінюються з поколінням; влас�
 
 ## Інтеграція та дозволи сесій
 
+`HostCoopNavPlugin` — альтернатива для хостів із власними сесіями. Хост ін’єктує
+`HostSessionAuthorizer`, який перевіряє строк дії та відкликання і повертає
+серверну ідентичність. Запити передають наявний `sessionId`; необов’язкові
+`driverId` і `brandId` мають збігатися з нею. ID сесії є bearer-обліковими
+даними та має бути захищений під час передавання. OAuth-токен або окремий grant
+у цьому режимі не потрібні. Етап 2, як і раніше, потребує QUIC.
+
 `CoopNavPlugin<A>` реалізує `ServerPlugin`. Хост ін’єктує `AuthPlugin<A>`,
 `SessionAuthorizer` і `CoopNavStorage`; синглтонів чи permissive production
 default немає. `InMemorySessionAuthorizer` призначений для локальної

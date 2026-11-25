@@ -155,6 +155,13 @@ positioning figures are requirements, not benchmark results.
 
 ## Host integration and grants
 
+`HostCoopNavPlugin` provides an alternative for hosts that already issue session
+credentials. Inject a `HostSessionAuthorizer` that validates expiry and revocation
+and resolves the server-side identity. Requests supply the existing `sessionId`;
+optional `driverId` and `brandId` must match that identity. The session ID is a
+bearer credential and must be protected in transit. No OAuth token or grant is
+required in this mode. Stage 2 still requires QUIC.
+
 `CoopNavPlugin<A>` is a normal `ServerPlugin`. The host supplies its
 `AuthPlugin<A>`, `SessionAuthorizer`, and `CoopNavStorage`; all are injected,
 with no singleton or permissive production default. `InMemorySessionAuthorizer`

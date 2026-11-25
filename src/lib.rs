@@ -1,5 +1,6 @@
 mod auth;
 pub mod cooperative;
+mod host;
 mod model;
 mod rpc;
 mod session;
@@ -7,6 +8,7 @@ pub mod storage;
 
 pub use auth::{AuthorizedCoopRequest, RpcAuthContext};
 pub use cooperative::{SectionControls, SectionError};
+pub use host::{HostCoopNavPlugin, HostSessionAuthorizer};
 pub use model::{IngestParams, MAX_BATCH_POINTS, PointSource, TrackPoint, TrackingSessionParams};
 pub use rpc::{
     COOP_SYNC_PERMISSION, CoopNavPlugin, INGEST_PERMISSION, SERVER_TIME_PERMISSION,
