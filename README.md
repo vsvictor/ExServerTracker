@@ -46,8 +46,9 @@ The ingest `points` payload matches the KMP `RpcTrackingTransport` contract:
 longitude, and accuracy must be present together. Coordinates and accuracies
 must be finite and in their physical ranges; accuracies have no arbitrary
 upper limit, so long stationary anchors remain representable. Speed is bounded
-to 220 km/h. Network points cannot report speed/course; dead-reckoning and
-stationary points cannot carry raw coordinates. Timestamps must be positive
+to 220 km/h. Network points cannot report speed/course; dead-reckoning points
+cannot carry raw coordinates. Stationary points can include the last accepted raw
+fix and its original observation time. Timestamps must be positive
 integer Unix milliseconds. Old/offline points and out-of-order device-clock
 timestamps are valid; the server does not sort or enforce freshness. IDs are
 32 hexadecimal characters and request order is preserved. Batches must contain

@@ -91,6 +91,27 @@ fn permits_stationary_accuracy_growth_and_old_or_out_of_order_positive_times() {
 }
 
 #[test]
+fn stationary_accepts_complete_raw_fix_but_dead_reckoning_rejects_it() {
+    let mut stationary = point("0123456789abcdef0123456789abcdef");
+    stationary.source = PointSource::Stationary;
+    stationary.observed_at_ms = stationary.device_time_ms - 5_000;
+    assert!(stationary.validate().is_ok());
+    stationary.raw_accuracy_meters = None;
+    assert!(stationary.validate().is_err());
+    stationary.raw_accuracy_meters = Some(5.0);
+    stationary.raw_latitude = Some(f64::NAN);
+    assert!(stationary.validate().is_err());
+
+    let mut predicted = point("1123456789abcdef0123456789abcdef");
+    predicted.source = PointSource::DeadReckoning;
+    assert!(predicted.validate().is_err());
+    predicted.raw_latitude = None;
+    predicted.raw_longitude = None;
+    predicted.raw_accuracy_meters = None;
+    assert!(predicted.validate().is_ok());
+}
+
+#[test]
 fn rejects_entire_batch_before_storage_when_a_late_point_is_invalid_or_conflicting() {
     let valid = point("0123456789abcdef0123456789abcdef");
     let mut bad = point("1123456789abcdef0123456789abcdef");

@@ -75,8 +75,8 @@ impl TrackPoint {
             PointSource::Network if self.speed_mps.is_some() || self.bearing_degrees.is_some() => {
                 return Err("network points cannot include speed or bearing");
             }
-            PointSource::DeadReckoning | PointSource::Stationary if self.raw_latitude.is_some() => {
-                return Err("dead-reckoning and stationary points cannot include raw coordinates");
+            PointSource::DeadReckoning if self.raw_latitude.is_some() => {
+                return Err("dead-reckoning points cannot include raw coordinates");
             }
             PointSource::Fused
             | PointSource::Gps
