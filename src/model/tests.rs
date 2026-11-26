@@ -16,12 +16,44 @@ fn point(id: &str) -> TrackPoint {
         observed_at_ms: 1_763_500_000_000,
         source: PointSource::Fused,
         is_mock: false,
+        track_increment_meters: None,
+        phantom_increment_meters: None,
         flags: vec![
             "interference".into(),
             "SUSPECTED_INTERFERENCE".into(),
             "SUSPECTED_SPOOFING".into(),
         ],
     }
+}
+
+#[test]
+fn mileage_increments_round_trip_and_validate_as_a_pair() {
+    let mut point = point("0123456789abcdef0123456789abcdef");
+    let old = serde_json::to_value(&point).unwrap();
+    assert!(old.get("trackIncrementMeters").is_none());
+    let decoded: TrackPoint = serde_json::from_value(old).unwrap();
+    assert_eq!(decoded.track_increment_meters, None);
+    assert_eq!(decoded.phantom_increment_meters, None);
+    assert!(decoded.validate().is_ok());
+
+    point.track_increment_meters = Some(12.5);
+    point.phantom_increment_meters = Some(3.0);
+    let json = serde_json::to_value(&point).unwrap();
+    assert_eq!(json["trackIncrementMeters"], 12.5);
+    assert_eq!(json["phantomIncrementMeters"], 3.0);
+    let decoded: TrackPoint = serde_json::from_value(json).unwrap();
+    assert_eq!(decoded.track_increment_meters, Some(12.5));
+    assert_eq!(decoded.phantom_increment_meters, Some(3.0));
+    assert!(decoded.validate().is_ok());
+
+    point.phantom_increment_meters = Some(13.0);
+    assert!(point.validate().is_err());
+    point.phantom_increment_meters = Some(-1.0);
+    assert!(point.validate().is_err());
+    point.phantom_increment_meters = Some(f64::NAN);
+    assert!(point.validate().is_err());
+    point.phantom_increment_meters = None;
+    assert!(point.validate().is_err());
 }
 
 #[test]

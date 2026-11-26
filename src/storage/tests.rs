@@ -18,6 +18,8 @@ fn point(id: &str, latitude: f64) -> TrackPoint {
         source: PointSource::Fused,
         is_mock: false,
         flags: vec![],
+        track_increment_meters: None,
+        phantom_increment_meters: None,
     }
 }
 

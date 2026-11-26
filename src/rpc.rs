@@ -500,10 +500,16 @@ pub(crate) fn ingest_schema() -> Value {
                         "observedAtMs": {"type": "integer", "minimum": 1},
                         "source": {"enum": ["fused", "gps", "network", "deadReckoning", "stationary", "cooperative"]},
                         "isMock": {"type": "boolean"},
+                        "trackIncrementMeters": {"type": "number", "minimum": 0},
+                        "phantomIncrementMeters": {"type": "number", "minimum": 0},
                         "flags": {
                             "type": "array", "maxItems": 32,
                             "items": {"type": "string", "minLength": 1, "maxLength": 64}
                         }
+                    },
+                    "dependentRequired": {
+                        "trackIncrementMeters": ["phantomIncrementMeters"],
+                        "phantomIncrementMeters": ["trackIncrementMeters"]
                     },
                     "additionalProperties": false
                 }

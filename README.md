@@ -42,6 +42,12 @@ The ingest `points` payload matches the KMP `RpcTrackingTransport` contract:
 }
 ```
 
+Optional `trackIncrementMeters` and `phantomIncrementMeters` must either both
+be omitted (older points) or both be finite, non-negative numbers, with the
+phantom increment no greater than the total increment. They are the client's
+per-point statistics increments, not independently calculated server mileage.
+Deploy support for these fields before clients that send them.
+
 `raw*`, `speedMps`, and `bearingDegrees` may be omitted. Raw latitude,
 longitude, and accuracy must be present together. Coordinates and accuracies
 must be finite and in their physical ranges; accuracies have no arbitrary

@@ -37,10 +37,28 @@ pub struct TrackPoint {
     pub source: PointSource,
     pub is_mock: bool,
     pub flags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_increment_meters: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_increment_meters: Option<f64>,
 }
 
 impl TrackPoint {
     pub fn validate(&self) -> Result<(), &'static str> {
+        match (self.track_increment_meters, self.phantom_increment_meters) {
+            (None, None) => {}
+            (Some(track), Some(phantom))
+                if track.is_finite()
+                    && phantom.is_finite()
+                    && track >= 0.0
+                    && phantom >= 0.0
+                    && phantom <= track => {}
+            _ => {
+                return Err(
+                    "mileage increments must both be finite, non-negative, and phantom must not exceed track",
+                );
+            }
+        }
         if self.id.len() != 32 || !self.id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("point id must contain exactly 32 hexadecimal characters");
         }
